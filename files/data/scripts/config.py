@@ -5,6 +5,8 @@ Kiosk Config
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import platform
 import urllib.parse
 
@@ -341,8 +343,16 @@ class Config:
     def save(self):
         """Save config to file"""
         self.log.info(f'Saving config to: {self.config_file.absolute()}')
-        with open(self.config_file, 'wt', encoding='utf-8') as cf:
-            cf.write(self.to_json())
+        fd, temporary = tempfile.mkstemp(dir=self.config_file.parent, prefix='.config-')
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as cf:
+                cf.write(self.to_json())
+                cf.flush()
+                os.fsync(cf.fileno())
+            os.replace(temporary, self.config_file)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
 
     def get(self, key: str):
         """Get a config value"""
@@ -353,7 +363,7 @@ class Config:
 
     def set(self, key: str, value: Any):
         """Set a config value"""
-        self.log.debug(f'Setting config key: {key} to {value}')
+        self.log.debug(f'Setting config key: {key}')
         if key not in self.config:
             raise KeyError(f'Invalid config key: {key}')
         self.config[key] = value

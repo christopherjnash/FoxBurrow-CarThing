@@ -10,7 +10,7 @@ const DEV_ENVIRONMENT = false;
 
 // Functions
 
-function loadJSON(path, callback) {
+function loadJSON(path, callback, method = "GET") {
     // fetch json from a url endpoint, without using jquery
     console.debug('loadJSON: ' + path);
     var xhr = new XMLHttpRequest();
@@ -25,7 +25,8 @@ function loadJSON(path, callback) {
         }
     };
     // xhr.onerror = null;
-    xhr.open("GET", path, true);
+    xhr.open(method, path, true);
+    if (method === "POST") xhr.setRequestHeader("X-WallThing-Action", "1");
     xhr.send();
 }
 
@@ -52,8 +53,8 @@ function simulate_key(key) {
     // simulate a key/button press
     // TODO should urlescape key, even tho we wont ever use invalid values
     console.log("Simulating key: " + key);
-    let url = window.location.protocol + "//" + location.hostname + ":" + WEBSERVER_PORT + "/simulatekey?key=" + encodeURIComponent(key);
-    loadJSON(url);
+    let url = "/simulatekey?key=" + encodeURIComponent(key);
+    loadJSON(url, null, "POST");
 
 }
 
@@ -70,8 +71,8 @@ function maint_action(action) {
         show_timer_overlay('Restarting service', 'Restarting kiosk service', 12);
     }
 
-    let url = window.location.protocol + "//" + location.hostname + ":" + WEBSERVER_PORT + "/maintenance?action=" + encodeURIComponent(action);
-    loadJSON(url);
+    let url = "/maintenance?action=" + encodeURIComponent(action);
+    loadJSON(url, null, "POST");
 
 }
 
@@ -104,7 +105,7 @@ function show_timer_overlay(title, message, reload_time) {
 
     setTimeout(function () {
         show_overlay(title, 'Reloading page...');
-        let new_url = window.location.protocol + '//' + window.location.hostname + ':' + WEBSERVER_PORT + '/'
+        let new_url = '/'
         window.location.href = new_url;
     }, (reload_time * 1000));
 }

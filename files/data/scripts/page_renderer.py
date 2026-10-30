@@ -8,6 +8,8 @@ from __future__ import annotations
 import os
 import subprocess
 import platform
+import html
+import json
 
 
 from urllib.parse import urlencode
@@ -74,13 +76,14 @@ class PageRenderer:
                 this_color = 'red'
             elif 'LOG' in line[:first_n_chars]:
                 this_color = '#707070'
-            colorized_content += f'<span style="color: {this_color};">{line}</span>\n'
+            colorized_content += f'<span style="color: {this_color};">{html.escape(line)}</span>\n'
         return colorized_content
 
     def get_content_novncscript(self) -> str:
         """Render the novnc js module import"""
         # NOTE based on this: https://github.com/novnc/noVNC/blob/master/vnc_lite.html
         vnc_pass: str = self.config.get("vnc_password")
+        encoded_password = json.dumps(vnc_pass).replace('<', '\\u003c')
         if platform.system() == 'Darwin':
             vnc_host = '"wallthing-4"'
         else:
@@ -92,7 +95,7 @@ class PageRenderer:
         newcontent: list[str] = ['<script type="module" crossorigin="anonymous">']
         for line in js_content.splitlines():
             if line.startswith('const VNC_PASSWORD'):
-                newcontent.append(f'    const VNC_PASSWORD = "{vnc_pass}";  // rewritten by PageRenderer.get_content_novncscript()')
+                newcontent.append(f'    const VNC_PASSWORD = {encoded_password};  // rewritten by PageRenderer.get_content_novncscript()')
             elif line.startswith('const VNC_HOST'):
                 newcontent.append(f'    const VNC_HOST = {vnc_host};  // rewritten by PageRenderer.get_content_novncscript()')
             else:
@@ -246,6 +249,8 @@ class PageRenderer:
         with tag('div'):
             with tag('h2'):
                 text('Device Screen')
+            with tag('p'):
+                text('VNC is disabled by default. Remote viewing requires a private VNC password and SSH tunnels; see docs/SETUP.md.')
 
             bignum = 600
             smallnum = bignum * 0.6

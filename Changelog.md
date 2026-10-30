@@ -1,5 +1,11 @@
 # Change Log
 
+v2.0.2 (this fork; source only, hardware validation pending)
+
+- Unique pairing keys, authenticated loopback administration, CSRF protection, escaped logs, and disabled remote debugging services.
+- Unprivileged Chromium with sandbox/certificate checks, optional nonblocking HA, browser supervision, and offline recovery.
+- Exact-commit installation, backups, preserved settings and unrelated firewall rules. See [SETUP](docs/SETUP.md); historical update instructions below do not apply to this fork.
+
 v2.0.1
 
 - add `development` tag to images built using dev repo

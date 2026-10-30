@@ -9,3 +9,4 @@ yattag
 websockify
 psutil
 packaging
+requests

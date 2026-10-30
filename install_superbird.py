@@ -8,6 +8,7 @@ import sys
 import inspect
 import shutil
 import argparse
+import subprocess
 
 from pathlib import Path
 
@@ -27,7 +28,6 @@ CONFIG_FILES_REPLACE: dict[str, str] = {
 }
 
 CONFIG_FILES_NOREPLACE: dict[str, str] = {
-    f"{NEW_FILES}/etc/vnc/vnc_passwd": "/etc/vnc/vnc_passwd",
     f"{NEW_FILES}/etc/X11/xorg.conf.portrait": "/etc/X11/xorg.conf",
 }
 
@@ -58,7 +58,6 @@ def shutdown_services():
         'backlight',
         'kiosk',
         'vnc',
-        'usbgadget',
         'websockify',
     ]
     for svc in services:
@@ -70,19 +69,11 @@ def check_settings_partition():
     """Check if /dev/settings has been setup for browser profile"""
     # NOTE this does NOT work in the chroot, need to run on actual device
     announce_myself()
-    output = run_bash('mount |grep -q /dev/settings || echo missing')
-    if output != 'missing':
+    output = subprocess.check_output(['findmnt', '-rn', '-o', 'SOURCE,TARGET', '--target', '/config'], text=True).split()
+    if len(output) == 2 and output[1] == '/config' and os.path.realpath(output[0]) == os.path.realpath('/dev/settings'):
         log.info('/dev/settings is already mounted on /config')
     else:
-        log.info('Preparing /dev/settings as /config for browser profile')
-        content = """
-        umount /config  # just in case
-        rm -r /config
-        mkfs.ext4 -F /dev/settings
-        mkdir /config
-        mount /config
-        """
-        run_bash(content)
+        raise RuntimeError('/config is not mounted from /dev/settings. Mount and verify the existing settings partition first; the installer never formats it.')
 
 
 def install_scripts():
@@ -107,14 +98,15 @@ def clear_systemd_logs():
 
 def _install_service(name: str, bypass: bool):
     """Install a single service"""
-    # NOTE would normally do "systemctl daemon-reload", but systemd on superbird it doesnt matter
     if not name.endswith('.service'):
         name = f'{name}.service'
     log.info(f'Installing service: {name}')
     run_bash(f'touch "/lib/systemd/system/{name}"')
-    chown(f"/lib/systemd/system/{name}", USER_NAME)
     shutil.copy(f"{NEW_FILES}/lib/systemd/system/{name}", "/lib/systemd/system/")
+    os.chown(f'/lib/systemd/system/{name}', 0, 0)
     if not bypass:
+        run_bash('systemctl daemon-reload')
+    if not bypass and name != "usbgadget.service":
         run_bash(f'systemctl restart "{name}"')
     try:
         os.symlink(f"/lib/systemd/system/{name}", f"/etc/systemd/system/multi-user.target.wants/{name}")
@@ -128,8 +120,6 @@ def install_services(bypass: bool):
     services = [
         'backlight',
         'kiosk',
-        'vnc',
-        'websockify',
         'usbgadget',
     ]
     for svc in services:
@@ -184,24 +174,29 @@ def setup_hosts():
 
 def install_superbird(bypass: bool = False):
     """Setup superbird device"""
+    from hardening_install import paired_keys, secure_device
+    paired_keys(f'/home/{USER_NAME}/.ssh/authorized_keys')
     if not bypass:
-        shutdown_services()
         check_settings_partition()
-        clear_systemd_logs()
+        shutdown_services()
+        # Preserve logs needed to diagnose installation failures.
     install_scripts()
     install_apt_packages(STAGE1_APT_PKGS)
     install_apt_packages(STAGE2_APT_PKGS)
     install_pip_packages(f'{LOCAL_SCRIPTS}/requirements.txt')
-    install_services(bypass)
     install_config_files()
-    if not bypass:
-        restart_haproxy()
+    secure_device(bypass=bypass)
+    for optional in ('vnc', 'websockify'):
+        shutil.copy(NEW_FILES / 'lib/systemd/system' / f'{optional}.service', '/lib/systemd/system/')
+    install_services(bypass)
+
     setup_hostname()
     setup_hosts()
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='superbird kiosk installer')
+    parser.add_argument('--no-reboot', action='store_true', help='Leave reboot to a verified update workflow')
     parser.add_argument('--bypass', action='store_true', help='Bypass steps dependant on real hardware (for installing in chroot)')
     args = parser.parse_args(sys.argv[1:])  # the sys.argv bit makes it work with pyinstaller
 
@@ -222,6 +217,6 @@ if __name__ == '__main__':
         sys.exit(1)
     log.info('Done setting up superbird!')
 
-    if not args.bypass:
+    if not args.bypass and not args.no_reboot:
         log.info('Will reboot superbird device now')
         os.system('reboot')

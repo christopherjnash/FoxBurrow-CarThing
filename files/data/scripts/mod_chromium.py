@@ -16,6 +16,9 @@ import subprocess
 import threading
 import tempfile
 import shutil
+import shlex
+import pwd
+from recovery import supervise_process, recover_connection, browser_command
 
 from datetime import datetime
 from pathlib import Path
@@ -54,7 +57,7 @@ class Chromium(ModService):
             if not Path(self.binary).exists():
                 self.log.error('Could not find chromium binary!')
                 self.log.error('checked: /usr/bin/chromium and /usr/bin/chromium-browser')
-                sys.exit()
+                raise FileNotFoundError('Chromium is not installed')
         self.temp_dir = Path(tempfile.NamedTemporaryFile(delete=False).name)  # do not user mkdtemp() to avoid creating at this time
         self.temp_dir.unlink()  # have to remove the file because we're using it as a folder
         self.stop_signal = threading.Event()
@@ -80,8 +83,10 @@ class Chromium(ModService):
                 return
 
         self.log.info('Starting Chromium browser thread')
-        self.thread_browser = threading.Thread(target=self.run_chromium, args=[url, scale, self.profile_dir], daemon=False)
+        self.thread_browser = threading.Thread(target=self.run_browser_supervised, args=[url, scale, self.profile_dir], daemon=False)
         self.thread_browser.start()
+        self.thread_recovery = threading.Thread(target=recover_connection, args=(self, self.stop_signal), daemon=True)
+        self.thread_recovery.start()
 
         self.log.info('Starting Chromium console logging thread')
         self.thread_console = threading.Thread(target=self.monitor_console, args=[self.stop_signal,], daemon=False)
@@ -94,7 +99,9 @@ class Chromium(ModService):
             self.stop_signal.set()
             time.sleep(0.5)
             self.kill_process()
-            time.sleep(0.5)
+            for thread in (self.thread_browser, self.thread_console, getattr(self, "thread_recovery", None)):
+                if thread and thread is not threading.current_thread():
+                    thread.join(timeout=10)
 
     def cleanup(self):
         """Cleanup temporary stuff"""
@@ -120,6 +127,8 @@ class Chromium(ModService):
         else:
             shutil.rmtree(self.profile_dir)
             Path(self.profile_dir).mkdir()
+            user = pwd.getpwnam("wallthing-browser")
+            os.chown(self.profile_dir, user.pw_uid, user.pw_gid)
         self.start()
 
     def kill_process(self) -> None:
@@ -194,6 +203,15 @@ class Chromium(ModService):
         new_height = int(height * (1 / scale))
         return f'{new_width},{new_height}'
 
+    def run_browser_supervised(self, *args):
+        try:
+            self.run_chromium(*args)
+        except Exception:
+            self.log.exception('Browser launch failed')
+        if not self.stop_signal.is_set():
+            self.log.error('Browser worker stopped unexpectedly; restarting kiosk through systemd')
+            os._exit(1)
+
     def run_chromium(self, url: str, display_scale: float = 1.0, user_data_dir: Path = Path('/config'), disk_cache_dir: Path = Path('/dev/null'), chr_args: str = '', x_args: str = '-nocursor'):
         """Start X with just Chromium browser
             fullscreen, kiosk mode, tweaked for touchscreen, with given url, and remote debugging enabled
@@ -233,7 +251,6 @@ class Chromium(ModService):
         ]
 
         security_args = [
-            '--no-sandbox',
             '--autoplay-policy=no-user-gesture-required',
             '--use-fake-ui-for-media-stream',
             '--use-fake-device-for-media-stream',
@@ -260,11 +277,11 @@ class Chromium(ModService):
             '--disable-overlay-scrollbar',
             '--disable-features=OverlayScrollbar',
             '--disable-features=TranslateUI',
-            '--ignore-certificate-errors',
         ]
 
         debugging_args = [
-            '--remote-allow-origins=*',
+            '--remote-allow-origins=http://localhost',
+            '--remote-debugging-address=127.0.0.1',
             f'--remote-debugging-port={self.crdp_port}',
         ]
 
@@ -280,7 +297,7 @@ class Chromium(ModService):
             chromium_args = display_args + performance_args + security_args + input_args + interface_args + debugging_args + [
                 f'--disk-cache-dir={disk_cache_dir}',
                 f'--user-data-dir={user_data_dir}',
-                f'--kiosk {chr_args}',
+                '--kiosk',
                 f'--app={url}',
             ]
 
@@ -304,31 +321,29 @@ class Chromium(ModService):
 
         else:
             # build the whole Chromium command
-            chromium_command = self.binary
-            for arg in chromium_args:
-                chromium_command += f' {arg}'
+            chromium_command = shlex.join(browser_command(self.binary, chromium_args))
 
             self.log.debug(f'Chromium command line: {chromium_command}')
 
             # build xinitrc content
             allow_sleep: bool = self.config.get('screen_sleep_allow')
             if allow_sleep:
-                xi_content = f"""# Generated by marquee service
-                echo "Chromium command line: {chromium_command}"
+                xi_content = f"""#!/bin/sh
                 echo "running Chromium..."
-                {chromium_command}
+                xhost +SI:localuser:wallthing-browser || exit 1
+                exec {chromium_command}
                 """
             else:
-                xi_content = f"""# Generated by marquee service
+                xi_content = f"""#!/bin/sh
                 echo "running: xset -dpms"
                 xset -dpms
                 echo "running: set s off"
                 xset s off
                 echo "running: set s noblank"
                 xset s noblank
-                echo "Chromium command line: {chromium_command}"
                 echo "running Chromium..."
-                {chromium_command}
+                xhost +SI:localuser:wallthing-browser || exit 1
+                exec {chromium_command}
                 """
             # strip leading whitespace so we can indent above without affecting output
             xi_content_stripped = ''
@@ -339,14 +354,15 @@ class Chromium(ModService):
             temp_xinitrc = self.temp_dir.joinpath('chromium_xinitrc')
             with open(temp_xinitrc, 'wt', encoding='utf-8') as xi:
                 xi.write(xi_content_stripped)
+            temp_xinitrc.chmod(0o700)
 
             # build actual command line to run
-            cmd = ['xinit', str(temp_xinitrc), '--', f'{x_args}']
+            cmd = ['xinit', str(temp_xinitrc), '--', *shlex.split(x_args), '-nolisten', 'tcp']
 
             # finally, run the command
             try:
                 with open(self.log.log_chromium, 'wt', encoding='utf-8') as clf:
-                    subprocess.run(cmd, check=True, stdout=clf, stderr=clf)
+                    supervise_process(cmd, self.stop_signal, clf, self.log)
             except subprocess.CalledProcessError as ex:
                 self.log.warning(f'Chromium process threw an exception: {ex}')
             except Exception as ex:
@@ -419,11 +435,14 @@ class Chromium(ModService):
                     for en_meth in enable:
                         self.log.debug(f'Enabling events for: {en_meth}')
                         await ws.send(json.dumps({'id': self.req_id, 'method': en_meth}))
-                        _resp = await ws.recv()
+                        _resp = await asyncio.wait_for(ws.recv(), timeout=self.timeout)
                         self.req_id += 1
                     self.log.debug(f'Listening for event messages for methods: {",".join(methods)}')
                     while not stop_sig.is_set():
-                        response = await ws.recv()
+                        try:
+                            response = await asyncio.wait_for(ws.recv(), timeout=1)
+                        except asyncio.TimeoutError:
+                            continue
                         parsed_msg = json.loads(response)
                         # print(json.dumps(parsed_msg, indent=4))
                         if 'method' in parsed_msg and 'params' in parsed_msg:
@@ -436,6 +455,8 @@ class Chromium(ModService):
                     await asyncio.sleep(self.retry_wait)
                 else:
                     self.log.warning(f'Disconnected from Chromium instance: {ex}')
+                    connected = False
+                    await asyncio.sleep(self.retry_wait)
 
     async def handle_console_msg(self, parsed_msg: dict[str, Any]):
         """ASYNC: Handle console messages, by listening for CRDP Event: Runtime.consoleAPICalled (console log messages)

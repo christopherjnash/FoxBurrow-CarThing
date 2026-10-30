@@ -10,12 +10,13 @@ Buttons monitoring, to integrate with Home Assistant
 from __future__ import annotations
 
 import time
+import threading
 
 from typing import TYPE_CHECKING, Union
 from threading import Thread
 from threading import Event as ThreadEvent
 
-import urllib3
+import requests
 
 from homeassistant_api import Client, Domain, errors
 
@@ -26,8 +27,11 @@ if TYPE_CHECKING:
     from log_manager import LogManager
 
 
-# prevent warnings about insecure connections to HA if using self-signed cert
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+class BoundedSession(requests.Session):
+    """A missing HA server must never leave a worker stuck in an HTTP request."""
+    def request(self, *args, **kwargs):
+        kwargs.setdefault('timeout', (3, 5))
+        return super().request(*args, **kwargs)
 
 
 class HAManager:
@@ -46,10 +50,12 @@ class HAManager:
         self.scripts: Domain = None  # pyright: ignore[reportAttributeAccessIssue]
         self.automations: Domain = None  # pyright: ignore[reportAttributeAccessIssue]
         self.connected: bool = False
+        self.stopped = threading.Event()
 
     def start(self):
         """Start HA connection"""
-        self.connect()
+        self.stopped.clear()
+        threading.Thread(target=self.connect, name='ha-connect', daemon=True).start()
 
     def connect(self):
         """Attempt the connection repeatedly until successful"""
@@ -58,10 +64,10 @@ class HAManager:
             self.log.warning('Will not attempt to connect to HomeAssistant: no token set')
             return
         attempt_count = 0
-        while not self.connected:
+        while not self.connected and not self.stopped.is_set():
             attempt_count += 1
             try:
-                self.client = Client(f'{self.ha_server}/api', self.ha_token, cache_session=False, verify_ssl=False)
+                self.client = Client(f'{self.ha_server}/api', self.ha_token, cache_session=False, verify_ssl=True, session=BoundedSession())
                 self.lights = self.client.get_domain('light')  # pyright: ignore[reportAttributeAccessIssue]
                 self.scenes = self.client.get_domain('scene')  # pyright: ignore[reportAttributeAccessIssue]
                 self.scripts = self.client.get_domain('script')  # pyright: ignore[reportAttributeAccessIssue]
@@ -69,6 +75,8 @@ class HAManager:
                 for this_domain in ['lights', 'scenes', 'scripts', 'automations']:
                     if self.__dict__[this_domain] is None:
                         raise ConnectionError(f'Failed to get domain: {this_domain}')
+                if self.stopped.is_set():
+                    return
                 self.connected = True
                 self.log.debug('Successfully connected to HomeAssistant')
             except errors.UnauthorizedError as ex:
@@ -77,11 +85,11 @@ class HAManager:
             except Exception as ex:
                 self.connected = False
                 self.log.warning(f'Failed to connect to HomeAssistant API: {ex}, will retry in {self.retry_sleep} seconds (attempt {attempt_count})')
-                time.sleep(self.retry_sleep)
+                self.stopped.wait(min(self.retry_sleep * attempt_count, 60))
 
     def stop(self):
         """Stop HA connection"""
-        # NOTE there is no disconnect()
+        self.stopped.set()
         self.connected = False
 
     def get_light_level(self, entity_id: str) -> int:

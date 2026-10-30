@@ -48,6 +48,6 @@ function handle_refresh() {
 }
 
 function navigate_superbird() {
-    let new_url = window.location.protocol + '//' + window.location.hostname + '/';
+    let new_url = window.location.protocol + '//' + window.location.hostname + ':8080/';
     window.open(new_url);
 }

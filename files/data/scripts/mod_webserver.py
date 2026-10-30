@@ -16,6 +16,7 @@ from pathlib import Path
 from threading import Thread
 from typing import Any, Union, TYPE_CHECKING
 from aiohttp import web
+from control_security import admin_auth, ensure_admin_token
 
 
 from mod_common import ModService, kill_event_loop
@@ -39,7 +40,7 @@ class WebServer(ModService):
         self.config = config
         self.buttons = buttons
         self.chromium = chromium
-        self.bind_ip = '0.0.0.0'
+        self.bind_ip = '127.0.0.1'
         self.port = 80
         if platform.system() == 'Darwin':
             self.novnc_path = Path().cwd().joinpath('novnc')
@@ -68,7 +69,7 @@ class WebServer(ModService):
             self.loop.set_debug(True)
             self.loop.set_exception_handler(self.handle_loop_exception)  # pyright: ignore[reportArgumentType]
 
-            self.webapp = web.Application()
+            self.webapp = web.Application(middlewares=[admin_auth(ensure_admin_token())])
             self.setup_routes(self.webapp)
 
             # access_log can be set to logging.Logger instance, or None to mute logging
@@ -128,8 +129,8 @@ class WebServer(ModService):
             web.get('/style.css', self.page_renderer.get_web_css),  # pyright: ignore[reportArgumentType]
             web.get('/getconfig', self.get_web_getconfig),  # pyright: ignore[reportArgumentType]
             web.post('/setconfig', self.post_web_setconfig),  # pyright: ignore[reportArgumentType]
-            web.get('/simulatekey', self.get_web_simulatekey),  # pyright: ignore[reportArgumentType]
-            web.get('/maintenance', self.get_web_maintenance),  # pyright: ignore[reportArgumentType]
+            web.post('/simulatekey', self.get_web_simulatekey),  # pyright: ignore[reportArgumentType]
+            web.post('/maintenance', self.get_web_maintenance),  # pyright: ignore[reportArgumentType]
             web.get('/novnc/{tail:.*}', self.get_novnc_files),  # pyright: ignore[reportArgumentType]
             web.get('/devtools', self.page_renderer.get_web_devtools),  # pyright: ignore[reportArgumentType]
         ])
@@ -149,7 +150,10 @@ class WebServer(ModService):
             '.woff': 'font/woff',
         }
         tail = request.match_info['tail']
-        local_file = self.novnc_path.joinpath(tail)
+        base = self.novnc_path.resolve()
+        local_file = base.joinpath(tail).resolve()
+        if base not in local_file.parents:
+            raise web.HTTPForbidden()
         if not local_file.is_file():
             return web.Response(text=f'Not found: {local_file.absolute()}', status=404)
         content = 'Not Implemented'
@@ -184,7 +188,7 @@ class WebServer(ModService):
 
         # Buttons
         restart_needed = False
-        restart_if_changed = ['ha_server', 'ha_token', 'room_light', 'level_increment', 'esc_scene']
+        restart_if_changed = ['ha_enabled', 'ha_server', 'ha_token', 'room_light', 'level_increment', 'esc_scene']
         for keyname in changed_params:
             if keyname in restart_if_changed:
                 self.log.debug(f'Config param "{keyname}" changed')
@@ -196,7 +200,10 @@ class WebServer(ModService):
                 break
         if restart_needed:
             self.log.info('A restart is required for buttons')
-            self.buttons.restart()
+            self.buttons.stop()
+            self.buttons.cleanup()
+            if self.config.get('ha_enabled'):
+                self.buttons.start()
 
         # Browser
         restart_needed = False
@@ -219,8 +226,8 @@ class WebServer(ModService):
         if 'vnc_password' in changed_params:
             if platform.system() != 'Darwin':
                 self.log.info('Config parameter "vnc_password" changed, restarting vnc and websockify services')
-                subprocess.run(['systemctl', 'restart', 'vnc'], check=False)
-                subprocess.run(['systemctl', 'restart', 'websockify'], check=False)
+                subprocess.run(['systemctl', 'try-restart', 'vnc'], check=False)
+                subprocess.run(['systemctl', 'try-restart', 'websockify'], check=False)
 
         # Screen Brightness (does not require restart of xorg)
         if 'screen_brightness' in changed_params:
@@ -265,9 +272,10 @@ class WebServer(ModService):
         if 'vnc_password' in changed_params:
             if platform.system() != 'Darwin':
                 vnc_password = self.config.get('vnc_password')
-                with open('/tmp/doit.sh', 'wt', encoding='utf-8') as df:
-                    df.write(f'vncpasswd -f <<<"{vnc_password}" > /etc/vnc/vnc_passwd\n')
-                subprocess.run(['bash', '/tmp/doit.sh'], check=False)
+                encoded = subprocess.run(['vncpasswd', '-f'], input=(vnc_password + '\n').encode(), capture_output=True, check=True).stdout
+                with open('/etc/vnc/vnc_passwd', 'wb') as dest:
+                    dest.write(encoded)
+                os.chmod('/etc/vnc/vnc_passwd', 0o600)
 
         if 'screen_brightness' in changed_params:
             # NOTE: brightness value is strange so we must translate
@@ -297,6 +305,8 @@ class WebServer(ModService):
         if 'key' not in request.rel_url.query:
             return web.Response(status=400, reason='Missing required url parameter: key')
         key = request.rel_url.query['key']
+        if self.buttons.listener is None:
+            return web.Response(status=503, text='Button integration is disabled or unavailable.')
         self.buttons.listener.submit_fake(key)
         return web.Response(status=200)
 

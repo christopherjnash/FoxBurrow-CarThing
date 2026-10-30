@@ -45,7 +45,8 @@ class App:
             self.log.info('Starting Kiosk')
 
             self.buttons = Buttons(config=self.config, logger=self.log)
-            self.buttons.start()
+            if self.config.get('ha_enabled'):
+                threading.Thread(target=self.buttons.start, name='optional-buttons', daemon=True).start()
 
             self.chromium = Chromium(config=self.config, logger=self.log)
             self.chromium.start()
@@ -104,20 +105,23 @@ class App:
     def shutdown(self):
         """Shut things down properly"""
         self.shutdown_pending.set()
-        self.chromium.stop()
-        self.webserver.stop()
-        self.buttons.stop()
+        for service in (self.chromium, self.webserver, self.buttons):
+            if service is not None:
+                try:
+                    service.stop()
+                except Exception:
+                    self.log.exception('Service shutdown failed')
         self.log.stop()
 
     def cleanup(self):
         """Perform cleanup tasks"""
         self.log.debug('Cleaning up')
-        try:
-            self.chromium.cleanup()
-            self.webserver.cleanup()
-            self.buttons.cleanup()
-        except Exception:
-            pass
+        for service in (self.chromium, self.webserver, self.buttons):
+            if service is not None:
+                try:
+                    service.cleanup()
+                except Exception:
+                    self.log.exception('Service cleanup failed')
 
 
 if __name__ == '__main__':

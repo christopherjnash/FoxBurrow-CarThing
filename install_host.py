@@ -30,14 +30,7 @@ NEEDED_APT_PKGS: list[str] = [
 ]
 
 # NOTE: hosts maintenance center uses port 9090, and assumes superbird uses port 80
-FORWARD_PORTS: dict[int, int] = {
-    2022: 22,
-    5900: 5900,
-    5901: 5901,
-    # 9222: 9222,
-    9223: 9223,
-    80: 80,
-}
+FORWARD_PORTS: dict[int, int] = {}  # Admin access uses SSH tunnels.
 
 # #### Utility
 
@@ -73,6 +66,8 @@ def install_updater_service():
     if Path('/kiosk-updater').is_dir():
         shutil.rmtree('/kiosk-updater')
     shutil.copytree('./files/host/kiosk-updater', '/kiosk-updater')
+    shutil.copy('./files/data/scripts/control_security.py', '/kiosk-updater/control_security.py')
+    run_bash('systemctl daemon-reload')
     run_bash('systemctl enable kiosk-updater')
 
 
@@ -108,33 +103,8 @@ def setup_forwarding_rules():
     run_bash('sysctl -p')
     Path('/etc/iptables').mkdir(exist_ok=True)
 
-    log.info("Clearing all iptables rules")
-    scr_clear = """
-    iptables -F
-    iptables -X
-    iptables -Z
-    iptables -t nat -F
-    iptables -t nat -X
-    iptables -t mangle -F
-    iptables -t mangle -X
-    iptables -t raw -F
-    iptables -t raw -X
-    """
-    run_bash(scr_clear)
-
-    log.info("Rewriting iptables rules")
-    scr_rules = f"""
-    iptables -P FORWARD ACCEPT
-    iptables -A POSTROUTING -t nat -j MASQUERADE -s "{USBNET_PREFIX}.0/24"
-    """
-    run_bash(scr_rules)
-
-    log.info("Forwarding ports")
-    for src, dest in FORWARD_PORTS.items():
-        _forward_port(src, dest)
-
-    log.info("Persisting rules to file")
-    run_bash('iptables-save > /etc/iptables/rules.v4')
+    from hardening_install import configure_network
+    configure_network(USBNET_PREFIX)
 
 
 def setup_interfaces():
@@ -161,24 +131,8 @@ def setup_sshkey():
     """Setup ssh key authentication between host & superbird"""
     announce_myself()
 
-    Path(f"/home/{USER_NAME}/.ssh").mkdir(exist_ok=True)
-    chown_recursive(f"/home/{USER_NAME}/.ssh", USER_NAME)
-
-    write_file(f"/home/{USER_NAME}/.ssh/id_rsa", SSH_KEY_PRIVATE)
-    write_file(f"/home/{USER_NAME}/.ssh/id_rsa.pub", SSH_KEY_PUBLIC)
-
-    content = """
-    Host superbird
-        User superbird
-        StrictHostKeyChecking no
-        UserKnownHostsFile=/dev/null
-    """
-    write_file(f"/home/{USER_NAME}/.ssh/config", content)
-
-    chown_recursive(f"/home/{USER_NAME}/.ssh", USER_NAME)
-    chmod(f"/home/{USER_NAME}/.ssh/config", 600)
-    chmod(f"/home/{USER_NAME}/.ssh/id_rsa", 600)
-    chmod(f"/home/{USER_NAME}/.ssh/id_rsa.pub", 600)
+    from hardening_install import ensure_pairing_key
+    ensure_pairing_key(USER_NAME)
 
 
 # #### The whole process

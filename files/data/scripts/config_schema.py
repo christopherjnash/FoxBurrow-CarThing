@@ -18,7 +18,7 @@ CONFIG_SCHEMA: list[Category] = [
                 "name": "url",
                 "label": "Browser URL",
                 "tooltip": "URL to point the browser at",
-                "default": "https://192.168.1.144:8123/lovelace",
+                "default": "https://example.org",
                 "type": "str",
                 "validation": {
                     "str_type": "url"
@@ -47,8 +47,8 @@ CONFIG_SCHEMA: list[Category] = [
             {
                 "name": "vnc_password",
                 "label": "VNC Password",
-                "tooltip": "Password for VNC service",
-                "default": "superbird",
+                "tooltip": "Set a private password before enabling VNC over an SSH tunnel",
+                "default": "",
                 "type": "str",
                 "validation": {
                     "max_length": 8
@@ -113,8 +113,9 @@ CONFIG_SCHEMA: list[Category] = [
     },
     {
         'label': 'HomeAssistant',
-        'description': 'Configure connection to HomeAssistant',
+        'description': 'Optional Home Assistant button integration',
         'parameters': [
+            {'name': 'ha_enabled', 'label': 'Enable Home Assistant buttons', 'tooltip': 'Connect in the background; browser startup is independent.', 'default': False, 'type': 'bool'},
             {
                 "name": "ha_server",
                 "label": "Address (including port)",

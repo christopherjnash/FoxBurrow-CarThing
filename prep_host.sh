@@ -8,6 +8,12 @@
 
 set -e
 
+WALLTHING_COMMIT="${1:-}"
+if ! [[ "$WALLTHING_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "Usage: bash prep_host.sh FULL_REVIEWED_COMMIT_SHA"
+    exit 1
+fi
+
 # need to be root
 if [ "$(id -u)" == "0" ]; then
 	echo "Must be NOT run as root"
@@ -50,15 +56,14 @@ sudo apt install -y git
 echo "Cloning git repo"
 
 
-REPO="https://github.com/bishopdynamics/superbird-debian-kiosk"
+REPO="https://github.com/christopherjnash/superbird-debian-kiosk"
 # REPO="https://git.bishopdynamics.com/james/superbird-debian"
 
-sudo git config --global pull.rebase false
-sudo git config --global credential.helper store
 sudo git clone "$REPO" /repo
+sudo git -C /repo checkout --detach "$WALLTHING_COMMIT"
 
 echo "Done cloning repo!"
 
 echo "Running host installation script"
 cd /repo
-sudo python3 ./install_host.py
+sudo python3 ./install_reviewed.py --device host --commit "$WALLTHING_COMMIT"

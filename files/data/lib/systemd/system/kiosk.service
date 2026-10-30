@@ -1,11 +1,17 @@
 [Unit]
-Description=Kiosk Display
+Description=WallThing Kiosk
 Wants=network-online.target
+After=network-online.target usbgadget.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 ExecStart=/usr/bin/python3 /scripts/kiosk.py
-ExecStartPre=/scripts/clear_systemd_logs.sh
-RestartSec=2
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=10
+KillMode=control-group
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target

@@ -6,6 +6,7 @@ NOTE this only works using the PUBLIC github repo, not our private one
 """
 
 import sys
+import os
 import shutil
 import inspect
 import logging
@@ -78,6 +79,7 @@ STAGE2_APT_PKGS: list[str] = [
     'python3-pip',
     # the browser
     'chromium',
+    'chromium-sandbox',
     # proxy, to fix remote chromium debug port access
     'haproxy',
 ]
@@ -407,9 +409,22 @@ def setup_ssh_key():
     """Install public key for passwordless ssh authentication"""
     announce_myself()
     authpath = f'home/{USER_NAME}/.ssh/authorized_keys'
-    write_file(MOUNT_DATA.joinpath(authpath), SSH_KEY_PUBLIC)
+    key = build_public_key()
+    write_file(MOUNT_DATA.joinpath(authpath), key + '\n')
     in_target(f'chown "{USER_NAME}":"{USER_NAME}" "/{authpath}"')
     in_target(f'chmod 600 "/{authpath}"')
+
+
+def build_public_key():
+    key_file = os.environ.get('WALLTHING_SSH_PUBLIC_KEY_FILE')
+    if not key_file:
+        raise BuildStepException('Set WALLTHING_SSH_PUBLIC_KEY_FILE to your host public key before building.')
+    key = Path(key_file).read_text().strip()
+    if not key.startswith(('ssh-ed25519 ', 'ssh-rsa ')) or '\n' in key:
+        raise BuildStepException('Expected one OpenSSH public key.')
+    if LEGACY_SSH_PUBLIC_KEY.split()[1] in key:
+        raise BuildStepException('The shared upstream key is revoked. Supply your own public key.')
+    return key
 
 
 def install_kiosk():
@@ -556,6 +571,7 @@ if __name__ == '__main__':
 
         assert_linux()
         assert_root()
+        build_public_key()
 
         check_dev()
         check_existing_dump()

@@ -5,6 +5,7 @@ Kiosk Updater
 """
 
 import os
+import html
 import sys
 import time
 import asyncio
@@ -25,11 +26,12 @@ import requests
 from packaging.version import Version
 from multidict import MultiDictProxy
 from aiohttp import web
+from control_security import admin_auth, ensure_admin_token
 
 # #### Repo Configuration
 # NOTE check_dev() will overwrite these if development repo is detected
-global_git_repository = 'https://github.com/bishopdynamics/superbird-debian-kiosk'  # pyright: ignore[reportConstantRedefinition]
-global_git_version_url = 'https://raw.githubusercontent.com/bishopdynamics/superbird-debian-kiosk/refs/heads/main/VERSION'  # pyright: ignore[reportConstantRedefinition]
+global_git_repository = 'https://github.com/christopherjnash/superbird-debian-kiosk'  # pyright: ignore[reportConstantRedefinition]
+global_git_version_url = 'https://raw.githubusercontent.com/christopherjnash/superbird-debian-kiosk/refs/heads/main/VERSION'  # pyright: ignore[reportConstantRedefinition]
 
 
 # #### Logging configuration
@@ -198,8 +200,8 @@ def check_dev():
     else:
         # Production, github
         log.info('Detected production repo')
-        global_git_repository = 'https://github.com/bishopdynamics/superbird-debian-kiosk'  # pyright: ignore[reportConstantRedefinition]
-        global_git_version_url = 'https://raw.githubusercontent.com/bishopdynamics/superbird-debian-kiosk/refs/heads/main/VERSION'  # pyright: ignore[reportConstantRedefinition]
+        global_git_repository = 'https://github.com/christopherjnash/superbird-debian-kiosk'  # pyright: ignore[reportConstantRedefinition]
+        global_git_version_url = 'https://raw.githubusercontent.com/christopherjnash/superbird-debian-kiosk/refs/heads/main/VERSION'  # pyright: ignore[reportConstantRedefinition]
 
 
 class APIEffector():
@@ -224,8 +226,6 @@ class APIEffector():
         return {
             'Reboot Host': self.reboot_host,
             'Reboot Superbird': self.reboot_superbird,
-            'Check for Update': self.check_version,
-            'Update to Latest': self.update_latest,
             'Restart Updater Service': self.restart_updater_service,
         }
 
@@ -237,65 +237,15 @@ class APIEffector():
         """Reboot the superbird device"""
         # TODO hardcoded username here
         log.info('Instructing superbird to reboot via ssh')
-        run_bash('ssh -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null -i "/home/superbird/.ssh/id_rsa" superbird@superbird "sudo reboot"')
+        subprocess.run(['runuser', '-u', 'superbird', '--', 'ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-i', '/home/superbird/.ssh/wallthing_ed25519', 'superbird@192.168.7.2', 'sudo reboot'], check=True)
 
-    def check_version(self, _params: ParamsType = None):
-        """Check if there is a newer version in git repo"""
-        # HACK when this service starts at boot time, DNS is not working yet so it will fail to fetch version
-        #   so we will retry forever until we have a value. Once we have any value other than 0.0.0, we will NOT retry on failure
-        retry_after = 4  # seconds, how long to wait between retries
-        content = '0.0.0'
-        if self.remote_version != Version('0.0.0'):
-            self.remote_version = Version('0.0.0')
+    def check_version(self, _params=None):
+        self.local_version = Version(Path('/repo/VERSION').read_text().strip())
+        self.remote_version = self.local_version
+        self.allow_update = False
 
-        while self.remote_version == Version('0.0.0'):
-            try:
-                response = requests.get(global_git_version_url, timeout=2.0)
-                content = response.content.decode()
-                self.remote_version = Version(content)
-            except Exception as ex:
-                log.debug(f'Exception while fetching remote version: {ex}')
-                if self.remote_version == Version('0.0.0'):
-                    log.error(f'Failed to get remote version, will retry in {retry_after} seconds')
-                    time.sleep(retry_after)
-                else:
-                    log.error('Failed to get remote version, but we have a stale value so will NOT retry')
-
-        if platform.system() == 'Linux':
-            with open('/repo/VERSION', 'rt', encoding='utf-8') as lvf:
-                local_version = lvf.read()
-        else:
-            local_version = '9999.9999.9999'  # never allow update if we cant actually read local version
-        self.local_version = Version(local_version)
-
-        # log.info(f'Local: v{self.local_version}, Remote: v{self.remote_version}')
-        if self.remote_version > self.local_version:
-            log.info('The remote version is newer, you should update!')
-            self.allow_update = True
-        elif self.remote_version == self.local_version:
-            log.info('The remote version is the same. If you wish, you can "update" to reinstall the same version')
-            self.allow_update = True
-        else:
-            log.info('The remote version is OLDER, you cannot update.')
-            self.allow_update = False
-
-    def update_latest(self, _params: ParamsType = None):
-        """Update to the newest version from git repo"""
-        self.check_version()
-        if not self.allow_update:
-            log.warning('The remote version is OLDER, you cannot update.')
-        else:
-            # NOTE this is why we had to standardize repo location on host to: /repo
-            log.info('Performing update, calling: /repo/upgrade.sh')
-            log.info(f'  you can follow progress in {self.upgrade_log}')
-            self.update_in_progress = True
-            self.update_complete = False
-            script_content = f'#!/usr/bin/bash\n /repo/upgrade.sh > {self.upgrade_log} 2>&1\n'
-            run_bash(script_content)
-            self.check_version()
-            self.update_in_progress = False
-            self.update_complete = True
-            log.info('Update completed')
+    def update_latest(self, _params=None):
+        raise RuntimeError('Automatic branch updates are disabled. Install a reviewed commit over SSH.')
 
     def restart_updater_service(self, _params: ParamsType = None):
         """Restart this service"""
@@ -310,7 +260,7 @@ class Webserver():
 
     def __init__(self) -> None:
         log.debug('Initializing Webserver')
-        self.bind_ip = '0.0.0.0'
+        self.bind_ip = '127.0.0.1'
         self.port = WEBSERVER_PORT
         self.loop = asyncio.new_event_loop()
         self.thread: Thread = None  # pyright: ignore[reportAttributeAccessIssue]
@@ -321,7 +271,7 @@ class Webserver():
         self.api_map = self.api.get_map()
         self.shutdown_pending = Event()
         self.signal_count = 0
-        self.api_q.put(('Check for Update', {}))
+        self.api.check_version()
 
         signal.signal(signal.SIGTERM, self.handle_signal)  # type: ignore
         signal.signal(signal.SIGINT, self.handle_signal)  # type: ignore
@@ -356,7 +306,7 @@ class Webserver():
             self.loop.set_debug(True)
             self.loop.set_exception_handler(self.handle_loop_exception)  # pyright: ignore[reportArgumentType]
 
-            self.webapp = web.Application()
+            self.webapp = web.Application(middlewares=[admin_auth(ensure_admin_token())])
             self.setup_routes(self.webapp)
 
             # access_log can be set to logging.Logger instance, or None to mute logging
@@ -422,7 +372,7 @@ class Webserver():
         """Setup webserver routes"""
         app.add_routes([
             web.get('/', self.get_web_home),  # pyright: ignore[reportArgumentType]
-            web.get('/api', self.get_web_api),  # pyright: ignore[reportArgumentType]
+            web.post('/api', self.get_web_api),  # pyright: ignore[reportArgumentType]
         ])
 
     # ### Handle API calls
@@ -481,7 +431,7 @@ class Webserver():
                 this_color = 'red'
             elif 'LOG' in line[:first_n_chars]:
                 this_color = '#707070'
-            colorized_content += f'<span style="color: {this_color};">{line}</span>\n'
+            colorized_content += f'<span style="color: {this_color};">{html.escape(line)}</span>\n'
         return colorized_content
 
     def get_logs(self, file: str) -> str:
@@ -506,17 +456,7 @@ class Webserver():
     def get_web_home(self, _request: web.Request) -> web.Response:
         """Render the admin page"""
 
-        update_msg = 'No newer version available'
-        if self.api.update_complete:
-            update_msg = 'Update complete, a host reboot is required'
-        elif self.api.update_in_progress:
-            update_msg = 'Update in progress, please be patient. You can monitor the update in the log below. Page will refresh every second until complete'
-        elif self.api.remote_version > self.api.local_version:
-            update_msg = 'A newer version is available, please update'
-        elif self.api.remote_version == self.api.local_version:
-            update_msg = 'The remote version is the same. You can "update" to reinstall the same version'
-        elif self.api.remote_version < self.api.local_version:
-            update_msg = 'The remote version is OLDER, you cannot update'
+        update_msg = 'Install reviewed commits over SSH. Automatic branch updates are disabled.'
 
         buttons_content = '\n'
         for action in self.api_map:
@@ -527,7 +467,7 @@ class Webserver():
                 state = 'disabled'
 
             encoded_query = urlencode({'action': action})
-            buttons_content += f'                <button onclick="window.location.href=\'/api?{encoded_query}\';" {state}>{action}</button>\n'
+            buttons_content += f'<form method="post" action="/api?{encoded_query}"><button type="submit" {state}>{action}</button></form>\n'
 
         script_js = self.get_js()
 
@@ -556,8 +496,6 @@ class Webserver():
                 </div>
                 <div>
                     <label>Installed: v{self.api.local_version}</label>
-                    &nbsp
-                    <label>Available: v{self.api.remote_version}</label>
                 </div>
                 <div>
                     <label>Status: {update_msg}</label>
