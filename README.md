@@ -2,7 +2,7 @@
 
 This fork of [bishopdynamics/superbird-debian-kiosk](https://github.com/bishopdynamics/superbird-debian-kiosk) keeps the existing Debian 11 root filesystem and stock 4.9.113 kernel. A Raspberry Pi Zero 2 W provides USB networking; Chromium runs on the Car Thing.
 
-**Version 2.0.2 is a source update awaiting physical-device validation. No new flashable image is published.** The older kernel/browser, display performance, Chromium sandbox support on that kernel, touch input, and sign-in persistence still need testing on the hardware. Keep a complete stock-device backup.
+**Version 2.0.2 is a source update awaiting physical-device validation. No new flashable image is published.** The older kernel/browser, display performance, Chromium sandbox support on that kernel, touch input, and sign-in persistence still need testing on the hardware. Keep a complete backup of the device's existing firmware; a device already running DeskThing needs a DeskThing recovery backup.
 
 ## Changes in this fork
 
@@ -18,7 +18,7 @@ This fork of [bishopdynamics/superbird-debian-kiosk](https://github.com/bishopdy
 
 Follow [the setup and migration guide](docs/SETUP.md), including unique-key pairing **before** installing the device changes. Direct LAN administration and the old “Update to Latest” flow are no longer used.
 
-For a new installation, the upstream v2 image is only a bootstrap. It still contains shared credentials until this fork is installed. Use a dedicated Pi, migrate over the direct USB link, and keep that bootstrap isolated from untrusted networks. Preserve the stock backup before flashing anything.
+For a new installation, the upstream v2 image is only a bootstrap. It still contains shared credentials until this fork is installed. Use a dedicated Pi, migrate over the direct USB link, and keep that bootstrap isolated from untrusted networks. Before flashing anything, complete the guide's native Windows backup procedure, check the partition sizes, and verify a second copy against its SHA-256 manifest.
 
 The default browser URL is `https://example.org`. Set your own URL through the SSH-tunneled administration page. Enable Home Assistant explicitly only if you want its existing button actions. Application-specific dial/preset controls and an OS/browser upgrade are separate future work.
 
