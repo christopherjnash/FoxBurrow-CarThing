@@ -1,4 +1,6 @@
-# WallThing: supervised Chromium on Spotify Car Thing
+# FoxBurrow CarThing
+
+The FoxBurrow kiosk runs Chromium on a Spotify Car Thing, with a Raspberry Pi providing network access. See the [Yocto kiosk setup](docs/SETUP.md#foxburrow-on-the-yocto-kiosk-image) for the tested path. The original Debian WallThing migration is documented below.
 
 This fork of [bishopdynamics/superbird-debian-kiosk](https://github.com/bishopdynamics/superbird-debian-kiosk) keeps the existing Debian 11 root filesystem and stock 4.9.113 kernel. A Raspberry Pi Zero 2 W provides USB networking; Chromium runs on the Car Thing.
 
