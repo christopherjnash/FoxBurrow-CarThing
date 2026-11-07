@@ -1,5 +1,21 @@
 # Setup and migration
 
+## FoxBurrow on the Yocto kiosk image
+
+This is a separate installation path from the Debian migration below. It uses the Pi as the Wi-Fi and USB network host and runs Chromium 147 on the Car Thing. The Debian updater does not install or manage the Yocto firmware.
+
+1. On Ubuntu/WSL, install Podman, `just`, and Kas 5.5. Check out `JoeyEamigh/yocto-superbird` at `a3b941e17ad3fc06ed5b297f2400468d34ec6dad`. Set `KAS_CONTAINER_ENGINE=podman`. Use `kas/example-kiosk.yml` plus a local Kas overlay selecting only `superbird-kiosk-prod-image`. Set `CHROMIUM_KIOSK_URL` in the kiosk distro configuration.
+2. Apply and review the local kiosk changes before building. The tested build runs Chromium as a dedicated `foxburrow-browser` user, gives that group access to the Weston socket, removes `--no-sandbox` and `--single-process`, and passes `--disable-gpu` and `--disable-accelerated-video-decode`. Provision a separate unprivileged SSH account with the Pi’s public key and restrict login to the Pi’s USB address. The exact local Yocto patches and ZIP are not distributed by this repository.
+3. Install the static Car Thing network profile as `/etc/systemd/network/11-usb-ncm.network` so it takes precedence over the generated `/run/systemd/network/11-usb-ncm.network`. Match `uncm*`, set `Address=10.42.1.2/29`, `Gateway=10.42.1.1`, and configure DNS. Build with `kas-container build kas/example-kiosk.yml:kas/foxburrow-kiosk.yml`, where `foxburrow-kiosk.yml` is the local overlay. Use the full `-flashthing.zip` in Terbium’s Local archive option. Flashing replaces the bootloader and disk layout.
+4. On the Pi, configure `usb0` with `static ip_address=10.42.1.1/29` and `nogateway` in its dhcpcd interface stanza. Enable IPv4 forwarding and masquerade traffic from `10.42.1.2/32` through `wlan0`. Save the firewall rules with `netfilter-persistent save` if the Pi uses that service. Verify USB detection, ping, key-only SSH and HTTPS from the Car Thing before testing sign-in.
+5. If the screen goes black after the splash, check `journalctl -b -u chromium-kiosk.service` through USB ADB. The tested build logged `ERR_NAME_NOT_RESOLVED` when Chromium started before the Pi route was ready. Once HTTPS works, restart with `sudo adb shell 'systemctl restart chromium-kiosk.service'` on the Pi. A temporary systemd drop-in under `/run/systemd/system/chromium-kiosk.service.d/` with `TimeoutStartSec=45s` and `ExecStartPre=/usr/bin/wget -q -O /dev/null <kiosk-URL>` passed a warm restart test. Bake it into the build and test cold startup before relying on it unattended.
+
+**Tested on hardware:** Terbium flash, CDC-NCM, key-only SSH, HTTPS, FoxBurrow sign-in and touch. The renderer ran as the dedicated UID with nested PID namespaces, `NoNewPrivs: 1` and `Seccomp: 2`. Touch response was slow, and sign-in did not survive a Chromium restart. Cold startup with a persistent readiness gate, session persistence, and recovery remain unverified. Keep USB ADB access physically restricted because it provides a root shell.
+
+**Recovery choice:** If returning to Spotify firmware is sufficient, Terbium’s Factory Reset to Spotify is the fallback. It does not restore DeskThing, personal settings, or the custom kiosk. Factory recovery was not tested on this unit. Make a device-specific backup before flashing if you need to recover your existing firmware or data. A named partition dump alone was not verified to reverse the Yocto disk layout change.
+
+## Debian migration
+
 This is a source migration for the upstream v2.x Debian installation. No fork firmware image or physical hardware test is supplied. Keep a full backup of the device's current firmware and the recovery tools available (an existing DeskThing installation is not stock firmware). Use a dedicated Pi Zero 2 W running Raspberry Pi OS Lite 64-bit **Bullseye**, with user `superbird`, your own password, Wi-Fi configured, and SSH enabled. Current images with a different codename are rejected by the existing hardware installer.
 
 The Pi remains the USB/network host; the Car Thing runs the browser. Do not replace a working installation with this fork without reserving time to verify the display and recover if the old kernel cannot support the browser sandbox.
